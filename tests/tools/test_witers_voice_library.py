@@ -11,11 +11,16 @@ from __future__ import annotations
 
 from tools.audio.witers_voice_library import (
     find_witers_elevenlabs_voice,
+    find_witers_elevenlabs_voice_by_id,
     list_witers_elevenlabs_voices,
     load_witers_elevenlabs_voices,
+    resolve_witers_voice_id,
+    resolve_witers_voice_model,
 )
 
 EXPECTED_KEYS = {"david", "jc", "kate", "lujan"}
+DAVID_VOICE_ID = find_witers_elevenlabs_voice("david")["voice_id"]
+JC_VOICE_ID = find_witers_elevenlabs_voice("jc")["voice_id"]
 
 
 def test_registry_loads_and_has_expected_shape():
@@ -60,3 +65,37 @@ def test_find_by_display_name():
 
 def test_find_unknown_voice_returns_none():
     assert find_witers_elevenlabs_voice("not-a-real-voice") is None
+
+
+def test_find_by_id_resolves_registered_voice():
+    voice = find_witers_elevenlabs_voice_by_id(JC_VOICE_ID)
+    assert voice is not None
+    assert voice["key"] == "jc"
+
+
+def test_find_by_id_returns_none_for_unknown_id():
+    assert find_witers_elevenlabs_voice_by_id("not-a-real-voice-id") is None
+
+
+def test_resolve_falls_back_to_david_when_brand_wallet_has_no_voice():
+    assert resolve_witers_voice_id(None) == DAVID_VOICE_ID
+    assert resolve_witers_voice_id("") == DAVID_VOICE_ID
+
+
+def test_resolve_never_overrides_a_brand_wallet_voice_id():
+    brand_wallet_voice = "SomeBrandWalletVoiceId123"
+    assert resolve_witers_voice_id(brand_wallet_voice) == brand_wallet_voice
+
+    # Even when the Brand Wallet voice happens to be one of Witers' own
+    # preferred voices, it passes through unchanged rather than being
+    # "re-resolved" to itself through some other path.
+    assert resolve_witers_voice_id(JC_VOICE_ID) == JC_VOICE_ID
+
+
+def test_resolve_model_returns_preferred_model_for_witers_voices():
+    assert resolve_witers_voice_model(DAVID_VOICE_ID) == "eleven_v3"
+    assert resolve_witers_voice_model(JC_VOICE_ID) == "eleven_v3"
+
+
+def test_resolve_model_returns_none_for_unrelated_voice():
+    assert resolve_witers_voice_model("SomeBrandWalletVoiceId123") is None

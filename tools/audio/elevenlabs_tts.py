@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
 
 from tools.audio.elevenlabs_alignment import alignment_to_word_timestamps
+from tools.audio.elevenlabs_auth import ElevenLabsAuth, resolve_elevenlabs_auth
+from tools.audio.witers_voice_library import resolve_witers_voice_id, resolve_witers_voice_model
 from tools.base_tool import (
     BaseTool,
     Determinism,
@@ -37,9 +38,15 @@ class ElevenLabsTTS(BaseTool):
 
     dependencies = []
     install_instructions = (
-        "Set the ELEVENLABS_API_KEY environment variable:\n"
-        "  export ELEVENLABS_API_KEY=your_key_here\n"
-        "Get a key at https://elevenlabs.io\n"
+        "Provide an ElevenLabs credential through one of two paths "
+        "(checked automatically, no configuration flag to set):\n"
+        "  1. Self-hosted / direct: set the ELEVENLABS_API_KEY environment "
+        "variable.\n"
+        "     export ELEVENLABS_API_KEY=your_key_here\n"
+        "     Get a key at https://elevenlabs.io\n"
+        "  2. Claude Code Cloud: no env var needed. Ask an administrator to "
+        "provision an ElevenLabs credential on this session's agent proxy "
+        "for api.elevenlabs.io.\n"
         "If fal_elevenlabs_tts is available, use it instead to access ElevenLabs "
         "speech through fal.ai without a separate ElevenLabs key."
     )
@@ -78,12 +85,21 @@ class ElevenLabsTTS(BaseTool):
             "text": {"type": "string", "description": "Text to convert to speech"},
             "voice_id": {
                 "type": "string",
-                "description": "ElevenLabs voice ID (default: Rachel)",
+                "description": (
+                    "ElevenLabs voice ID. This should come from Brand Wallet "
+                    "when a brand has one configured — it always wins. When "
+                    "unset, falls back to Witers' pre-approved default voice "
+                    "(David - British Storyteller)."
+                ),
             },
             "model_id": {
                 "type": "string",
-                "default": "eleven_multilingual_v2",
-                "description": "TTS model to use",
+                "description": (
+                    "TTS model to use. Defaults to eleven_multilingual_v2, "
+                    "except when voice_id resolves to one of Witers' "
+                    "preferred voices (David, JC, Kate, Luján), which default "
+                    "to eleven_v3 instead."
+                ),
             },
             "stability": {
                 "type": "number",
@@ -155,37 +171,48 @@ class ElevenLabsTTS(BaseTool):
     ]
     user_visible_verification = ["Listen to generated audio for natural speech quality"]
 
-    DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
-
     def get_status(self) -> ToolStatus:
-        if os.environ.get("ELEVENLABS_API_KEY"):
-            return ToolStatus.AVAILABLE
-        return ToolStatus.UNAVAILABLE
+        return ToolStatus.AVAILABLE if resolve_elevenlabs_auth().available else ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         return round(len(inputs.get("text", "")) * 0.0003, 4)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        api_key = os.environ.get("ELEVENLABS_API_KEY")
-        if not api_key:
-            return ToolResult(success=False, error="No ElevenLabs API key. " + self.install_instructions)
+        auth = resolve_elevenlabs_auth()
+        if not auth.available:
+            return ToolResult(
+                success=False,
+                error="No ElevenLabs credential available. " + self.install_instructions,
+            )
 
         start = time.time()
         try:
-            result = self._generate(inputs, api_key)
+            result = self._generate(inputs, auth)
         except Exception as exc:
-            return ToolResult(success=False, error=f"TTS generation failed: {exc}")
+            return ToolResult(
+                success=False,
+                error=f"TTS generation failed (auth_mode={auth.mode}): {exc}",
+            )
 
         result.duration_seconds = round(time.time() - start, 2)
         result.cost_usd = self.estimate_cost(inputs)
         return result
 
-    def _generate(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
+    def _generate(self, inputs: dict[str, Any], auth: ElevenLabsAuth) -> ToolResult:
         import requests
 
         text = inputs["text"]
-        voice_id = inputs.get("voice_id", self.DEFAULT_VOICE_ID)
-        model_id = inputs.get("model_id", "eleven_multilingual_v2")
+        # Brand Wallet's voice_id always wins; only falls back to Witers'
+        # pre-approved default (David) when the caller didn't supply one.
+        voice_id = resolve_witers_voice_id(inputs.get("voice_id"))
+        # Only defaults to eleven_v3 when voice_id resolved to one of
+        # Witers' preferred voices; an unrelated voice_id keeps the generic
+        # multilingual_v2 default.
+        model_id = (
+            inputs.get("model_id")
+            or resolve_witers_voice_model(voice_id)
+            or "eleven_multilingual_v2"
+        )
         output_format = inputs.get("output_format", "mp3_44100_128")
         with_timestamps = bool(inputs.get("with_timestamps", False))
         voice_settings = {
@@ -200,13 +227,18 @@ class ElevenLabsTTS(BaseTool):
         if with_timestamps:
             url += "/with-timestamps"
 
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json" if with_timestamps else "audio/mpeg",
+        }
+        if auth.api_key:
+            headers["xi-api-key"] = auth.api_key
+        # else: proxy_managed — no header is sent; the session's agent
+        # proxy is expected to inject a credential for api.elevenlabs.io.
+
         response = requests.post(
             url,
-            headers={
-                "xi-api-key": api_key,
-                "Content-Type": "application/json",
-                "Accept": "application/json" if with_timestamps else "audio/mpeg",
-            },
+            headers=headers,
             json={
                 "text": text,
                 "model_id": model_id,
@@ -229,6 +261,7 @@ class ElevenLabsTTS(BaseTool):
             "text_length": len(text),
             "output": str(output_path),
             "format": output_format,
+            "auth_mode": auth.mode,
         }
         artifacts = [str(output_path)]
 

@@ -22,6 +22,22 @@ The direct API examples below require a centrally configured
 `ELEVENLABS_API_KEY`; they are not the default path when the fal.ai provider is
 available.
 
+`elevenlabs_tts.get_status()`/`execute()` (`tools/audio/elevenlabs_auth.py`)
+detect authentication automatically between two paths — no flag to set:
+
+- **Self-hosted / direct**: `ELEVENLABS_API_KEY` is set, sent as the
+  `xi-api-key` header.
+- **Claude Code Cloud**: no local key at all. This session's agent proxy
+  (`CCR_AGENT_PROXY_ENABLED` + `HTTPS_PROXY`) can inject a securely
+  provisioned ElevenLabs credential for `api.elevenlabs.io` on its own — the
+  tool sends no `xi-api-key` header in this mode and lets the proxy fill it
+  in. The key is never read, logged, or written to disk by this repo.
+
+If neither applies, the tool fails immediately with a clear error naming
+both paths — it never fabricates a placeholder credential or sends an empty
+header. `result.data["auth_mode"]` records which path was actually used
+(`"api_key"` or `"proxy_managed"`) for auditability.
+
 ## Text-to-Speech
 
 ```python
@@ -450,16 +466,26 @@ Witers has its own curated ElevenLabs voices, pre-approved for Spanish
 narration via `eleven_v3` — do not fall back to a generic default voice for
 Witers content when one of these fits. Resolved once against the real
 account and registered in `config/voices/witers_elevenlabs_voices.json`
-(loader: `tools/audio/witers_voice_library.py`, `find_witers_elevenlabs_voice`).
-A Brand Wallet `voice_id` always overrides this list when one is set — this
-is only the fallback so OpenMontage isn't picking a voice from scratch.
+(loader: `tools/audio/witers_voice_library.py`).
 
-| Key | Display name | Gender | Native tag |
-|-----|--------------|--------|------------|
-| `david` | David - British Storyteller | male | en (British) — approved for Spanish anyway |
-| `jc` | JC - Deep & Touching | male | es (Latin American) |
-| `kate` | Kate – Soothing Meditation & Sleep Voice | female | es (Latin American) |
-| `lujan` | Luján | male | es (Colombian) |
+**Priority (enforced inside `elevenlabs_tts._generate()` via
+`resolve_witers_voice_id`, not something callers need to implement
+themselves):** a Brand Wallet `voice_id` always wins when the caller
+supplies one — it is never overridden. Only when `voice_id` is unset does
+`elevenlabs_tts` fall back to **David - British Storyteller**
+(`BNgbHR0DNeZixGQVzloa`). JC, Kate, and Luján stay registered as Witers'
+other preferred voices, available for a Brand Wallet to select explicitly,
+but none of them is an automatic fallback — only David is. Whichever voice
+is resolved (fallback or Brand Wallet's own, if it happens to be one of the
+four), `model_id` defaults to that voice's `preferred_model`
+(`eleven_v3`) unless the caller passes an explicit `model_id`.
+
+| Key | Display name | Gender | Native tag | Role |
+|-----|--------------|--------|------------|------|
+| `david` | David - British Storyteller | male | en (British) — approved for Spanish anyway | **Default fallback** when Brand Wallet has no voice_id |
+| `jc` | JC - Deep & Touching | male | es (Latin American) | Preferred, Brand-Wallet-selectable |
+| `kate` | Kate – Soothing Meditation & Sleep Voice | female | es (Latin American) | Preferred, Brand-Wallet-selectable |
+| `lujan` | Luján | male | es (Colombian) | Preferred, Brand-Wallet-selectable |
 
 `eleven_v3` caveats confirmed against the account (`GET /v1/models`):
 supports Spanish (74 languages total), but caps at **5,000 characters per

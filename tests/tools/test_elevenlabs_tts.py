@@ -5,8 +5,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 from tools.audio.elevenlabs_tts import ElevenLabsTTS
+from tools.audio.witers_voice_library import find_witers_elevenlabs_voice
 from tools.base_tool import ToolStatus
 from tools.tool_registry import ToolRegistry
+
+DAVID_VOICE_ID = find_witers_elevenlabs_voice("david")["voice_id"]
+JC_VOICE_ID = find_witers_elevenlabs_voice("jc")["voice_id"]
 
 
 def _response(*, json_data=None, content=b""):
@@ -15,6 +19,14 @@ def _response(*, json_data=None, content=b""):
     response.content = content
     response.raise_for_status.return_value = None
     return response
+
+
+def _clear_auth_env(monkeypatch) -> None:
+    """Remove every signal both auth paths key off, including the proxy
+    markers this very test/sandbox process is genuinely running under —
+    without this, "no credential" tests would spuriously see proxy_managed."""
+    for var in ("ELEVENLABS_API_KEY", "CCR_AGENT_PROXY_ENABLED", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_contract_capability_and_agent_skills(monkeypatch):
@@ -31,9 +43,22 @@ def test_contract_capability_and_agent_skills(monkeypatch):
     assert "word_timestamps" in info["capabilities"]
 
 
-def test_get_status_unavailable_without_key(monkeypatch):
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+def test_get_status_unavailable_with_no_credential_at_all(monkeypatch):
+    _clear_auth_env(monkeypatch)
     assert ElevenLabsTTS().get_status() == ToolStatus.UNAVAILABLE
+
+
+def test_get_status_available_with_explicit_api_key(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    assert ElevenLabsTTS().get_status() == ToolStatus.AVAILABLE
+
+
+def test_get_status_available_via_agent_proxy_without_any_local_key(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CCR_AGENT_PROXY_ENABLED", "1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:46769")
+    assert ElevenLabsTTS().get_status() == ToolStatus.AVAILABLE
 
 
 def test_registry_discovers_elevenlabs_tts(monkeypatch):
@@ -44,6 +69,82 @@ def test_registry_discovers_elevenlabs_tts(monkeypatch):
     tool = registry.get("elevenlabs_tts")
     assert tool is not None
     assert tool.get_status() == ToolStatus.AVAILABLE
+
+
+def test_execute_fails_fast_with_no_credential_and_makes_no_network_call(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    tool = ElevenLabsTTS()
+
+    with patch("requests.post") as mock_post:
+        result = tool.execute({"text": "hola"})
+
+    assert result.success is False
+    assert "No ElevenLabs credential available" in result.error
+    assert "ELEVENLABS_API_KEY" in result.error
+    mock_post.assert_not_called()
+
+
+def test_execute_with_explicit_api_key_sends_it_as_header(tmp_path, monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "real-looking-test-key")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response) as mock_post:
+        result = tool.execute(
+            {
+                "text": "Hola mundo",
+                "voice_id": "21m00Tcm4TlvDq8ikWAM",
+                "output_path": str(output_path),
+            }
+        )
+
+    assert result.success is True
+    assert result.data["auth_mode"] == "api_key"
+    assert mock_post.call_args.kwargs["headers"]["xi-api-key"] == "real-looking-test-key"
+
+
+def test_execute_via_agent_proxy_sends_no_api_key_header(tmp_path, monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CCR_AGENT_PROXY_ENABLED", "1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:46769")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response) as mock_post:
+        result = tool.execute(
+            {
+                "text": "Hola mundo",
+                "voice_id": "21m00Tcm4TlvDq8ikWAM",
+                "output_path": str(output_path),
+            }
+        )
+
+    assert result.success is True
+    assert result.data["auth_mode"] == "proxy_managed"
+    # Never fabricate a placeholder credential — the header must be absent,
+    # not empty, so the proxy is free to inject the real one.
+    assert "xi-api-key" not in mock_post.call_args.kwargs["headers"]
+
+
+def test_explicit_api_key_takes_priority_over_agent_proxy(tmp_path, monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "real-looking-test-key")
+    monkeypatch.setenv("CCR_AGENT_PROXY_ENABLED", "1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:46769")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response) as mock_post:
+        result = tool.execute(
+            {"text": "hi", "voice_id": "21m00Tcm4TlvDq8ikWAM", "output_path": str(output_path)}
+        )
+
+    assert result.data["auth_mode"] == "api_key"
+    assert mock_post.call_args.kwargs["headers"]["xi-api-key"] == "real-looking-test-key"
 
 
 def test_execute_without_timestamps_hits_plain_endpoint(tmp_path, monkeypatch):
@@ -131,6 +232,76 @@ def test_execute_with_timestamps_hits_with_timestamps_endpoint(tmp_path, monkeyp
     assert sidecar["source"] == "elevenlabs_alignment"
     assert sidecar["words"] == words
     assert result.artifacts == [str(output_path), sidecar_path]
+
+
+def test_voice_id_falls_back_to_witers_david_when_brand_wallet_has_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response) as mock_post:
+        result = tool.execute({"text": "hi", "output_path": str(output_path)})
+
+    assert result.data["voice_id"] == DAVID_VOICE_ID
+    assert mock_post.call_args.args[0].endswith(f"/v1/text-to-speech/{DAVID_VOICE_ID}")
+    # No model_id given either, and David is a Witers preferred voice, so
+    # the preferred model (eleven_v3) applies automatically.
+    assert result.data["model"] == "eleven_v3"
+
+
+def test_brand_wallet_voice_id_is_never_overridden_by_the_david_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+    brand_wallet_voice = "SomeBrandWalletVoiceId123"
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response):
+        result = tool.execute(
+            {"text": "hi", "voice_id": brand_wallet_voice, "output_path": str(output_path)}
+        )
+
+    assert result.data["voice_id"] == brand_wallet_voice
+    assert result.data["voice_id"] != DAVID_VOICE_ID
+    # Unrelated (non-Witers) voice keeps the generic default model.
+    assert result.data["model"] == "eleven_multilingual_v2"
+
+
+def test_model_id_defaults_to_eleven_v3_when_brand_wallet_picks_a_witers_voice(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response):
+        result = tool.execute(
+            {"text": "hi", "voice_id": JC_VOICE_ID, "output_path": str(output_path)}
+        )
+
+    assert result.data["voice_id"] == JC_VOICE_ID
+    assert result.data["model"] == "eleven_v3"
+
+
+def test_explicit_model_id_is_never_overridden_even_for_a_witers_voice(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    output_path = tmp_path / "narration.mp3"
+    tool = ElevenLabsTTS()
+
+    response = _response(content=b"fake-mp3-bytes")
+    with patch("requests.post", return_value=response):
+        result = tool.execute(
+            {
+                "text": "hi",
+                "voice_id": JC_VOICE_ID,
+                "model_id": "eleven_multilingual_v2",
+                "output_path": str(output_path),
+            }
+        )
+
+    assert result.data["model"] == "eleven_multilingual_v2"
 
 
 def test_tts_selector_adapts_generic_timestamps_flag_for_elevenlabs():
