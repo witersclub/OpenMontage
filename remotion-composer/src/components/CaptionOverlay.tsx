@@ -6,6 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { getSocialSafeBottomPadding } from "../lib/socialSafeZone";
 
 // Word-level caption for TikTok-style highlight display
 export interface WordCaption {
@@ -29,6 +30,11 @@ type CaptionOverlayProps = {
   // Separator rendered between words. Space-delimited languages want the
   // default " "; CJK languages (no inter-word spacing) should pass "".
   wordSeparator?: string;
+  // Overrides the computed social-safe-zone bottom padding (px). Leave unset
+  // in every normal case — the default keeps captions clear of the
+  // platform-UI band on portrait (9:16) video per AGENT_GUIDE.md's Social
+  // Safe Zone rule. Only pass this for a deliberate, reviewed exception.
+  bottomSafePadding?: number;
 };
 
 interface CaptionPage {
@@ -65,7 +71,8 @@ const PageRenderer: React.FC<{
   backgroundColor: string;
   fontFamily: string;
   wordSeparator: string;
-}> = ({ page, fontSize, color, highlightColor, backgroundColor, fontFamily, wordSeparator }) => {
+  bottomSafePadding: number;
+}> = ({ page, fontSize, color, highlightColor, backgroundColor, fontFamily, wordSeparator, bottomSafePadding }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -83,7 +90,13 @@ const PageRenderer: React.FC<{
       style={{
         justifyContent: "flex-end",
         alignItems: "center",
-        paddingBottom: 80,
+        // 80px base clearance from the very edge (landscape/square, no
+        // platform-UI overlap), or the social safe zone reserved for
+        // platform UI (handle, description, like/comment rail) on portrait
+        // video, whichever is larger — see lib/socialSafeZone.ts. At the
+        // default 24% fraction this puts the caption box's own bottom edge
+        // at ~76% of frame height on a 9:16 frame.
+        paddingBottom: Math.max(80, bottomSafePadding),
       }}
     >
       <div
@@ -152,9 +165,12 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
   backgroundColor = "rgba(15, 23, 42, 0.75)",
   fontFamily = "Space Grotesk, Inter, system-ui, sans-serif",
   wordSeparator = " ",
+  bottomSafePadding,
 }) => {
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
   const pages = buildPages(words, wordsPerPage);
+  const resolvedBottomSafePadding =
+    bottomSafePadding ?? getSocialSafeBottomPadding(width, height);
 
   return (
     <AbsoluteFill>
@@ -176,6 +192,7 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
               backgroundColor={backgroundColor}
               fontFamily={fontFamily}
               wordSeparator={wordSeparator}
+              bottomSafePadding={resolvedBottomSafePadding}
             />
           </Sequence>
         );

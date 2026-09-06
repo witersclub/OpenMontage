@@ -426,6 +426,17 @@ When `render_runtime="hyperframes"` is locked and HyperFrames is unavailable (No
 
 Routing is automatic — `video_compose` reads `edit_decisions.render_runtime` and dispatches to the matching engine (`_render_via_hyperframes`, `_remotion_render`, or `_render_via_ffmpeg`). But the **agent must know both Remotion and HyperFrames exist at proposal time** so it can design the visual approach intentionally. Don't default to Remotion for motion-graphics-heavy concepts that HTML/GSAP would express more naturally, and don't default to HyperFrames for briefs that reuse the existing React scene stack.
 
+### Social Safe Zone (9:16 / Vertical Deliverables) — Standing Rule
+
+On a posted Reel/TikTok/Short, the bottom ~20-25% of the frame is covered by platform UI — the account handle, caption/description text, and the like/comment/share/follow rail. Anything OpenMontage burns into that band (word-level captions, CTA copy, title-card text) is unreadable or clipped on the real platform even though it looks fine in a bare video player.
+
+**This applies automatically to every portrait (9:16) composition — it is not something a director skill, a proposal, or Witers needs to ask for per job.**
+
+- Critical text — word-level captions, CTA copy, title/hero text — must keep its own bottom edge at roughly **75-78% of frame height** (i.e. reserve ~22-25% of the frame at the bottom). Never let it approach the true bottom edge.
+- Background layers (video, gradients, decorative texture) still bleed full-frame edge-to-edge — only the *readable text* moves up. Don't shrink or crop the background to make room.
+- Landscape/square compositions have no comparable platform-chrome overlap and are unaffected (the mechanism below is a no-op there).
+- **Implementation:** `remotion-composer/src/lib/socialSafeZone.ts` exports `getSocialSafeBottomPadding(width, height)` (24% reserved on portrait, 0 on landscape/square). `CaptionOverlay.tsx` (shared by every composition) and `CinematicRenderer.tsx`'s title/CTA card both call it already — this is the reference pattern. Any new bottom-anchored or full-frame text component must call the same helper rather than hardcoding a pixel offset; don't reintroduce a fixed `paddingBottom`/`bottom` value for text on portrait video.
+
 ## Capability Discovery
 
 OpenMontage uses two layers for capability choice:
@@ -546,6 +557,17 @@ Check music availability in this order and present the options:
 **If no music source is available:** Tell the user explicitly. Do NOT let this surface as a surprise at the asset stage.
 
 Record the music decision in the proposal/brief artifact so the asset director knows what to do.
+
+### Default Behavior: Attempt Background Music, Never Silently Skip It
+
+For social/vertical deliverables (and any format where music fits the content), background music is the **default assumption**, not an opt-in the user has to remember to request. At the asset stage:
+
+1. **Attempt sourcing automatically**, in priority order: `music_library` (user-provided tracks) → `music_search` (royalty-free) → `music_generation` (API). Use the first one that is actually configured and reachable — don't stop at the first capability that merely exists in the registry if calling it fails (e.g. a provider unreachable from this session's network policy). `music_gen` (ElevenLabs) resolves credentials the same dual way as `elevenlabs_tts` (`tools/audio/elevenlabs_auth.py`) — a local `ELEVENLABS_API_KEY` or the Claude Code Cloud agent-proxy credential — so it is usually already available wherever narration TTS is.
+2. **Only a source with permitted use** counts — a configured tool's own license terms (royalty-free search results, generated instrumental tracks) apply as documented by that provider; never substitute an unlicensed file.
+3. **If every source fails or none is configured**, proceed with the production and **report the gap explicitly** (in the brief's `missing_capabilities`, the render_report's `warnings`, and to the user) — do not omit music silently and say nothing.
+4. **When music is added alongside narration, mix it with real ducking** — route narration + music through `audio_mixer`'s `full_mix` operation (`ducking.enabled: true`; tune `music_volume_during_speech`, `attack_ms`, `release_ms`) to produce a single pre-mixed track, then feed that one file to the renderer as the narration/soundtrack asset. Do not layer raw unducked narration and music tracks directly in the composition — Remotion's per-track volume props are a static level, not a sidechain, and can't duck accurately.
+
+This is a standing default, not a per-job ask — it applies whether or not the user mentions music.
 
 ## Pipeline Asset Expectations
 

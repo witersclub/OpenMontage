@@ -14,6 +14,7 @@ import {
 
 import { CinematicRendererProps, CinematicTone, CinematicVideoScene } from "./cinematic/types";
 import { CaptionOverlay } from "./components/CaptionOverlay";
+import { getSocialSafeBottomPadding } from "./lib/socialSafeZone";
 import { resolveAsset } from "./lib/resolveAsset";
 
 const FPS = 30;
@@ -185,7 +186,8 @@ const TitleCard: React.FC<{
   variant = "plate",
 }) => {
   const frame = useCurrentFrame();
-  const { fps, durationInFrames } = useVideoConfig();
+  const { fps, durationInFrames, width, height } = useVideoConfig();
+  const bottomSafePadding = getSocialSafeBottomPadding(width, height);
 
   const container = spring({
     fps,
@@ -239,8 +241,6 @@ const TitleCard: React.FC<{
     <AbsoluteFill
       style={{
         background: "#000",
-        justifyContent: "center",
-        alignItems: "center",
       }}
     >
       {backgroundSrc ? (
@@ -280,6 +280,27 @@ const TitleCard: React.FC<{
         lineCount={signalLineCount}
       />
 
+      {/*
+        Safe content area: readable copy (accent lines, title text, accent
+        dot) is centered within this reduced-height wrapper instead of the
+        full frame, so it never lands inside the platform-UI band on
+        portrait video (handle, description, like/comment rail). The
+        background layers above stay full-bleed edge-to-edge — only the
+        text needs to move. See lib/socialSafeZone.ts.
+      */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: bottomSafePadding,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
       {/* Top accent line — grows from center outwards */}
       <div
         style={{
@@ -383,6 +404,7 @@ const TitleCard: React.FC<{
           transform: "translateY(172px)",
         }}
       />
+      </div>
     </AbsoluteFill>
   );
 };

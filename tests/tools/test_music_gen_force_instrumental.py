@@ -14,7 +14,10 @@ import types
 
 import pytest
 
+from tools.audio.elevenlabs_auth import ElevenLabsAuth
 from tools.audio.music_gen import MusicGen
+
+_TEST_AUTH = ElevenLabsAuth(api_key="test-key", mode="api_key")
 
 
 class _FakeResponse:
@@ -56,7 +59,7 @@ def test_force_instrumental_is_sent_true_by_default(monkeypatch, tmp_path):
             "duration_seconds": 10,
             "output_path": str(out),
         },
-        "test-key",
+        _TEST_AUTH,
     )
 
     assert "force_instrumental" in captured["payload"], "force_instrumental kwarg was never sent"
@@ -76,7 +79,7 @@ def test_explicit_vocal_opt_out_is_respected(monkeypatch, tmp_path):
             "force_instrumental": False,
             "output_path": str(out),
         },
-        "test-key",
+        _TEST_AUTH,
     )
 
     assert captured["payload"]["force_instrumental"] is False

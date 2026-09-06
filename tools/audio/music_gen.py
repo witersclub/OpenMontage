@@ -1,16 +1,18 @@
 """Music generation tool via ElevenLabs Music API.
 
 Generates background music and sound effects for video production.
-Reports unavailable when no API key is configured.
+Reports unavailable when no credential is resolvable — either a local
+ELEVENLABS_API_KEY or a Claude Code Cloud agent-proxy-injected credential
+for api.elevenlabs.io (see tools.audio.elevenlabs_auth).
 """
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Any
 
+from tools.audio.elevenlabs_auth import ElevenLabsAuth, resolve_elevenlabs_auth
 from tools.base_tool import (
     BaseTool,
     Determinism,
@@ -36,11 +38,17 @@ class MusicGen(BaseTool):
     determinism = Determinism.STOCHASTIC
     runtime = ToolRuntime.API
 
-    dependencies = []  # checked dynamically via API key
+    dependencies = []  # checked dynamically via credential resolution
     install_instructions = (
-        "Set the ELEVENLABS_API_KEY environment variable:\n"
-        "  export ELEVENLABS_API_KEY=your_key_here\n"
-        "Get a key at https://elevenlabs.io"
+        "Provide an ElevenLabs credential through one of two paths "
+        "(checked automatically, no configuration flag to set):\n"
+        "  1. Self-hosted / direct: set the ELEVENLABS_API_KEY environment "
+        "variable.\n"
+        "     export ELEVENLABS_API_KEY=your_key_here\n"
+        "     Get a key at https://elevenlabs.io\n"
+        "  2. Claude Code Cloud: no env var needed. Ask an administrator to "
+        "provision an ElevenLabs credential on this session's agent proxy "
+        "for api.elevenlabs.io."
     )
 
     agent_skills = ["music", "sound-effects", "elevenlabs"]
@@ -94,9 +102,7 @@ class MusicGen(BaseTool):
     ]
 
     def get_status(self) -> ToolStatus:
-        if os.environ.get("ELEVENLABS_API_KEY"):
-            return ToolStatus.AVAILABLE
-        return ToolStatus.UNAVAILABLE
+        return ToolStatus.AVAILABLE if resolve_elevenlabs_auth().available else ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         # ElevenLabs music generation pricing is per generation
@@ -111,29 +117,26 @@ class MusicGen(BaseTool):
         return round(duration / 30 * 0.05, 4)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        api_key = os.environ.get("ELEVENLABS_API_KEY")
-        if not api_key:
+        auth = resolve_elevenlabs_auth()
+        if not auth.available:
             return ToolResult(
                 success=False,
-                error="No ElevenLabs API key. " + self.install_instructions,
+                error="No ElevenLabs credential available. " + self.install_instructions,
             )
 
         start = time.time()
 
         try:
-            result = self._generate(inputs, api_key)
+            result = self._generate(inputs, auth)
         except Exception as e:
-            return ToolResult(success=False, error=f"Music generation failed: {e}")
+            return ToolResult(success=False, error=f"Music generation failed (auth_mode={auth.mode}): {e}")
 
         result.duration_seconds = round(time.time() - start, 2)
         result.cost_usd = self.estimate_cost(inputs)
         return result
 
-    def _generate(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
-        import logging
+    def _generate(self, inputs: dict[str, Any], auth: ElevenLabsAuth) -> ToolResult:
         import requests
-
-        logger = logging.getLogger(__name__)
 
         prompt = inputs["prompt"]
         duration = inputs.get("duration_seconds")
@@ -150,10 +153,11 @@ class MusicGen(BaseTool):
 
         url = "https://api.elevenlabs.io/v1/music"
 
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if auth.api_key:
+            headers["xi-api-key"] = auth.api_key
+        # else: proxy_managed — no header is sent; the session's agent
+        # proxy is expected to inject a credential for api.elevenlabs.io.
 
         payload = {
             "prompt": prompt,
@@ -182,6 +186,7 @@ class MusicGen(BaseTool):
                 "duration_seconds": duration,
                 "output": str(output_path),
                 "format": "mp3",
+                "auth_mode": auth.mode,
             },
             artifacts=[str(output_path)],
         )
