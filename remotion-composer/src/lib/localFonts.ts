@@ -73,7 +73,7 @@ export function loadLocalFont(
       // ceiling even though nothing is actually stuck — widened to give a
       // multi-clip reel headroom instead of tripping the infra-failure
       // classification on a merely-slower-than-tested composition.
-      { timeoutInMilliseconds: 1200000 },
+      { timeoutInMilliseconds: 1800000 },
     );
     loadedFonts[fontKey] = document.fonts
       .load(`${style === "italic" ? "italic " : ""}${weight} 16px "${fontFamily}"`)
