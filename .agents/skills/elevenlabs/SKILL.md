@@ -444,7 +444,31 @@ The `/generate-voiceover` command handles the full workflow:
 6. Updates project.json with timing info
 ```
 
-## Popular Voices
+## Witers Preferred Voices
+
+Witers has its own curated ElevenLabs voices, pre-approved for Spanish
+narration via `eleven_v3` — do not fall back to a generic default voice for
+Witers content when one of these fits. Resolved once against the real
+account and registered in `config/voices/witers_elevenlabs_voices.json`
+(loader: `tools/audio/witers_voice_library.py`, `find_witers_elevenlabs_voice`).
+A Brand Wallet `voice_id` always overrides this list when one is set — this
+is only the fallback so OpenMontage isn't picking a voice from scratch.
+
+| Key | Display name | Gender | Native tag |
+|-----|--------------|--------|------------|
+| `david` | David - British Storyteller | male | en (British) — approved for Spanish anyway |
+| `jc` | JC - Deep & Touching | male | es (Latin American) |
+| `kate` | Kate – Soothing Meditation & Sleep Voice | female | es (Latin American) |
+| `lujan` | Luján | male | es (Colombian) |
+
+`eleven_v3` caveats confirmed against the account (`GET /v1/models`):
+supports Spanish (74 languages total), but caps at **5,000 characters per
+request** (vs 10,000 for `eleven_multilingual_v2` — chunk per script section,
+as OpenMontage already does), and does not support the `style` or
+`use_speaker_boost` voice_settings fields (the API silently ignores them
+rather than rejecting the request — confirmed with a live call).
+
+## Popular Voices (generic ElevenLabs defaults)
 
 - George: `JBFqnCBsd6RMkjVDRZzb` (warm narrator)
 - Rachel: `21m00Tcm4TlvDq8ikWAM` (clear female)

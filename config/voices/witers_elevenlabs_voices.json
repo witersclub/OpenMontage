@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "provider": "elevenlabs",
+  "brand": "witers",
+  "verified_at": "2026-09-06",
+  "verification_notes": "Resolved by name against GET /v1/voices on Witers' own ElevenLabs account. The API credential was never read or stored by this repo — in this environment api.elevenlabs.io calls are transparently authenticated by the session's egress proxy. eleven_v3 was confirmed compatible with POST /v1/text-to-speech/{voice_id}/with-timestamps via one live 6-word Spanish request (voice: jc); the returned character alignment converted cleanly to word-level timing with tools/audio/elevenlabs_alignment.py. See tools/audio/witers_voice_library.py for the loader.",
+  "voices": [
+    {
+      "key": "david",
+      "display_name": "David - British Storyteller",
+      "voice_id": "BNgbHR0DNeZixGQVzloa",
+      "gender": "male",
+      "account_category": "professional",
+      "native_language": "en",
+      "accent": "british",
+      "preferred_model": "eleven_v3",
+      "notes": "Tagged English/British in the ElevenLabs account; Witers has specifically approved this voice for Spanish narration via eleven_v3."
+    },
+    {
+      "key": "jc",
+      "display_name": "JC - Deep & Touching",
+      "voice_id": "7UB6WMKyZDj19XRGC8Sb",
+      "gender": "male",
+      "account_category": "professional",
+      "native_language": "es",
+      "accent": "latin american",
+      "preferred_model": "eleven_v3",
+      "notes": "Live-validated end-to-end (audio + word timestamps) during this integration."
+    },
+    {
+      "key": "kate",
+      "display_name": "Kate – Soothing Meditation & Sleep Voice",
+      "voice_id": "4kkDPYdSYNR6dFZZFGUQ",
+      "gender": "female",
+      "account_category": "professional",
+      "native_language": "es",
+      "accent": "latin american",
+      "preferred_model": "eleven_v3",
+      "notes": ""
+    },
+    {
+      "key": "lujan",
+      "display_name": "Luján",
+      "voice_id": "GcbypXUfJn5DbptRc2U7",
+      "gender": "male",
+      "account_category": "professional",
+      "native_language": "es",
+      "accent": "colombian",
+      "preferred_model": "eleven_v3",
+      "notes": ""
+    }
+  ]
+}
