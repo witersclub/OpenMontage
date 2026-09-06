@@ -10,14 +10,17 @@ Pexels exposes videos and images on two separate endpoints
 internally and normalises both into the same `Candidate` shape. The
 corpus builder never branches on kind.
 
-Uses `PEXELS_API_KEY` from the environment. `.env` is loaded at process
-start by `tools.base_tool._load_dotenv`.
+Uses `PEXELS_API_KEY` from the environment when set (`.env` is loaded at
+process start by `tools.base_tool._load_dotenv`), and otherwise falls back
+to the Claude Code Cloud agent proxy's injected credential for
+`api.pexels.com` — see `tools.video.pexels_auth`.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Optional
+
+from tools.video.pexels_auth import resolve_pexels_auth
 
 from .base import Candidate, SearchFilters
 
@@ -46,7 +49,7 @@ class PexelsSource:
     supports = {"video": True, "image": True}
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("PEXELS_API_KEY"))
+        return resolve_pexels_auth().available
 
     # ------------------------------------------------------------------
     # Public protocol
@@ -101,13 +104,17 @@ class PexelsSource:
     # ------------------------------------------------------------------
 
     def _headers(self) -> dict[str, str]:
-        key = os.environ.get("PEXELS_API_KEY")
-        if not key:
+        auth = resolve_pexels_auth()
+        if auth.mode == "none":
             raise RuntimeError(
                 "PEXELS_API_KEY not set. Get a free key at "
                 "https://www.pexels.com/api/ and add it to .env."
             )
-        return {"Authorization": key}
+        if auth.mode == "proxy_managed":
+            # No Authorization header — the Claude Code agent proxy injects
+            # a provisioned credential for api.pexels.com on its own.
+            return {}
+        return {"Authorization": auth.api_key}
 
     def _search_videos(
         self, query: str, filters: SearchFilters

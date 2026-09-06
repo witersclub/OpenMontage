@@ -65,8 +65,15 @@ export function loadLocalFont(
       `Loading local font ${fontFamily} ${style} ${weight} (${fileName})`,
       // A local staticFile() read has no network round-trip involved, so a
       // generous production timeout here is purely a safety net, not an
-      // expected wait.
-      { timeoutInMilliseconds: 120000 },
+      // expected wait. 120s was tuned against a single-video composition
+      // (docs/remotion-runtime.md: ~82-86s wall clock); a composition with
+      // several source videos (each going through OffthreadVideo's
+      // server-side frame-extraction/staging proxy during initial page
+      // setup, before any frame renders) pushes total setup time past that
+      // ceiling even though nothing is actually stuck — widened to give a
+      // multi-clip reel headroom instead of tripping the infra-failure
+      // classification on a merely-slower-than-tested composition.
+      { timeoutInMilliseconds: 780000 },
     );
     loadedFonts[fontKey] = document.fonts
       .load(`${style === "italic" ? "italic " : ""}${weight} 16px "${fontFamily}"`)

@@ -118,6 +118,14 @@ const PageRenderer: React.FC<{
                   // previous behavior; for CJK it prevents mid-word breaks.
                   display: "inline-block",
                   whiteSpace: "nowrap",
+                  // A trailing space character inside a nowrap inline-block
+                  // is unreliable across renderers (this project's headless
+                  // Chromium build collapses it, jamming words together —
+                  // "Publicas en redes" rendered as "Publicasenredes"). A
+                  // real margin can't be collapsed away, so the separator is
+                  // reserved as layout space instead of trailing text; an
+                  // empty separator (CJK) keeps words flush with no gap.
+                  marginRight: wordSeparator ? "0.3em" : 0,
                   color: isActive ? highlightColor : isPast ? color : `${color}99`,
                   transition: "none", // CSS transitions forbidden in Remotion
                   textShadow: isActive
@@ -125,7 +133,7 @@ const PageRenderer: React.FC<{
                     : "0 2px 4px rgba(0,0,0,0.5)",
                 }}
               >
-                {w.word}{i < page.words.length - 1 ? wordSeparator : ""}
+                {w.word}
               </span>
             );
           })}

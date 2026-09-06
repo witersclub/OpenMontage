@@ -3056,10 +3056,16 @@ class VideoCompose(BaseTool):
 
         # Layer 2: edit_decisions subtitle style
         if edit_decisions:
+            # `subtitles.style` in the edit_decisions schema is a plain
+            # descriptive string (e.g. "word-by-word", "karaoke") — display
+            # mode, not a font/color style dict. Only merge it here when a
+            # caller actually put a style dict in that slot (legacy/loose
+            # callers); a schema-valid string is not a style override.
             ed_style = edit_decisions.get("subtitles", {}).get("style", {})
-            for k, v in ed_style.items():
-                if v is not None:
-                    resolved[k] = v
+            if isinstance(ed_style, dict):
+                for k, v in ed_style.items():
+                    if v is not None:
+                        resolved[k] = v
 
         # Layer 3: Explicit override (highest priority)
         if explicit_style:
