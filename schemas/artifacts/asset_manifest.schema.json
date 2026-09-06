@@ -34,6 +34,28 @@
           "provider": { "type": "string", "description": "Provider name (e.g. pixabay, google_imagen)" },
           "license": { "type": "string", "description": "License type (e.g. Pixabay License, CC0)" },
           "original_url": { "type": "string", "description": "Source URL if downloaded from a stock service" },
+          "voice_id": {
+            "type": "string",
+            "description": "Provider-specific voice ID used to generate a narration asset (e.g. an ElevenLabs voice_id from a brand's voice library)."
+          },
+          "captions": {
+            "type": "object",
+            "description": "Provenance and location of word-level timing for a narration asset, when available.",
+            "required": ["source", "path"],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": ["elevenlabs_alignment", "whisper_transcription", "forced_alignment"],
+                "description": "How the word-level timestamps were obtained. 'elevenlabs_alignment' means the TTS provider returned native character alignment with the audio, so no separate transcription pass is needed."
+              },
+              "path": {
+                "type": "string",
+                "description": "Relative path to a JSON sidecar of [{word, start, end}] entries (seconds), in the same shape Transcriber produces."
+              },
+              "word_count": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          },
           "voice_performance": {
             "type": "object",
             "description": "Applied voice-performance contract for narration assets.",

@@ -95,7 +95,9 @@ For each script section:
    - ElevenLabs: `stability`, `similarity_boost`, `style`, `speed`, and `use_speaker_boost`
    - Azure: voice aliases (`andrew`, `brandon`, `ava`, `guy`, `jenny`) or any Azure short name, SSML `rate` (e.g. `"-4%"`), `pitch` (e.g. `"+1st"`), and `style` (e.g. `"narration-professional"`) — see the `azure-text-to-speech` skill
 7. Generate using `tts_selector` — it auto-routes to the best available TTS provider based on user preference and availability. Check the registry's `best_for` fields to understand each provider's strengths.
-8. Record the applied `voice_performance` metadata on each narration asset
+   - Pass `script.voice_id` (e.g. a brand's stored ElevenLabs voice) as `voice_id` so the request routes to that exact voice. When `script.voice_id` is unset, `elevenlabs_tts` itself falls back to Witers' pre-approved default voice (David - British Storyteller, via `resolve_witers_voice_id` in `tools/audio/witers_voice_library.py`) and its preferred model automatically — there is nothing to search or decide here; just omit `voice_id` and let the tool resolve it.
+   - Pass `timestamps: true`. When the selected provider is `elevenlabs_tts` (or `fal_elevenlabs_tts`), this returns native word-level timing alongside the audio — no separate transcription pass is needed for captions. Check `result.data` for `word_timestamps`/`word_timestamps_path` (or, for fal, `timestamps`) before assuming a provider produced them; not every TTS provider supports this.
+8. Record the applied `voice_performance` metadata on each narration asset. Also record `voice_id` (top-level asset field) and, when the provider returned native timing, a `captions` block (`source: "elevenlabs_alignment"`, `path: word_timestamps_path`) — see the manifest example below. This is what lets the compose stage skip Whisper for this asset.
 9. Verify the audio file exists and duration matches expected timing (±15%)
 
 **Pronunciation guide**: If the script contains technical terms, jargon, or names with non-obvious pronunciation, include a pronunciation map in the TTS request.
@@ -160,7 +162,13 @@ Assemble all generated assets into the manifest:
       "source_tool": "tts_selector",
       "scene_id": "scene-1",
       "duration_seconds": 8.2,
-      "cost_usd": 0.003
+      "cost_usd": 0.003,
+      "voice_id": "21m00Tcm4TlvDq8ikWAM",
+      "captions": {
+        "source": "elevenlabs_alignment",
+        "path": "assets/narration/s1.words.json",
+        "word_count": 24
+      }
     },
     {
       "id": "img-scene-3",

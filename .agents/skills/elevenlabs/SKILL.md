@@ -22,6 +22,22 @@ The direct API examples below require a centrally configured
 `ELEVENLABS_API_KEY`; they are not the default path when the fal.ai provider is
 available.
 
+`elevenlabs_tts.get_status()`/`execute()` (`tools/audio/elevenlabs_auth.py`)
+detect authentication automatically between two paths — no flag to set:
+
+- **Self-hosted / direct**: `ELEVENLABS_API_KEY` is set, sent as the
+  `xi-api-key` header.
+- **Claude Code Cloud**: no local key at all. This session's agent proxy
+  (`CCR_AGENT_PROXY_ENABLED` + `HTTPS_PROXY`) can inject a securely
+  provisioned ElevenLabs credential for `api.elevenlabs.io` on its own — the
+  tool sends no `xi-api-key` header in this mode and lets the proxy fill it
+  in. The key is never read, logged, or written to disk by this repo.
+
+If neither applies, the tool fails immediately with a clear error naming
+both paths — it never fabricates a placeholder credential or sends an empty
+header. `result.data["auth_mode"]` records which path was actually used
+(`"api_key"` or `"proxy_managed"`) for auditability.
+
 ## Text-to-Speech
 
 ```python
@@ -95,6 +111,70 @@ Max 3 seconds per break. Excessive breaks can cause speed artifacts.
 1. Generate → listen → identify pronunciation/pacing issues
 2. Adjust: phonetic spellings, break tags, voice settings
 3. Regenerate. If pauses aren't precise enough, add silence in post with ffmpeg rather than fighting the TTS engine.
+
+## Word-Level Timestamps (Captions)
+
+For synchronized captions (CaptionOverlay.tsx), request the `/with-timestamps`
+variant instead of the plain synthesis endpoint. In OpenMontage this is the
+`with_timestamps: true` input on `elevenlabs_tts` (or the generic `timestamps: true`
+flag on `tts_selector`, which `tts_selector._adapt_inputs()` translates for you).
+
+```python
+from tools.audio.elevenlabs_tts import ElevenLabsTTS
+
+result = ElevenLabsTTS().execute({
+    "text": "Bienvenido a nuestro nuevo producto.",
+    "voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "model_id": "eleven_multilingual_v2",
+    "with_timestamps": True,
+    "output_path": "projects/demo/assets/narration/s1.mp3",
+})
+# result.data["word_timestamps"] -> [{"word": "Bienvenido", "start": 0.0, "end": 0.52}, ...]
+# result.data["word_timestamps_path"] -> sidecar JSON written next to the audio file
+```
+
+**Raw response shape** from `POST /v1/text-to-speech/{voice_id}/with-timestamps`:
+
+```json
+{
+  "audio_base64": "...",
+  "alignment": {
+    "characters": ["B", "i", "e", "n", ...],
+    "character_start_times_seconds": [0.0, 0.03, 0.06, ...],
+    "character_end_times_seconds": [0.03, 0.06, 0.09, ...]
+  },
+  "normalized_alignment": { "...": "same shape, but against ElevenLabs' internally normalized text" }
+}
+```
+
+This is **character-level** alignment, not word-level — there is no word array
+in the raw response. `tools/audio/elevenlabs_alignment.py` groups it into words
+(a run of whitespace ends a word; attached punctuation, accents, and ñ stay
+part of the word) and converts seconds to Remotion's `{word, startMs, endMs}`
+`WordCaption` shape:
+
+```python
+from tools.audio.elevenlabs_alignment import alignment_to_word_timestamps, word_timestamps_to_word_captions
+
+word_timestamps = alignment_to_word_timestamps(response["alignment"])   # [{word, start, end}] seconds
+captions = word_timestamps_to_word_captions(word_timestamps)            # [{word, startMs, endMs}]
+```
+
+Use `alignment`, not `normalized_alignment` — it maps 1:1 against the text you
+sent, while the normalized variant reflects ElevenLabs' internal text
+expansion (numbers, abbreviations) and can drift from the original script.
+
+**Do not re-transcribe this audio with Whisper.** The alignment already came
+from the exact text sent to the model, so it is both more accurate and
+cheaper than a second ASR pass — see `skills/pipelines/explainer/compose-director.md`
+Step 5b for the pipeline-level decision (native timestamps first, Whisper only
+as a fallback for providers that don't return alignment).
+
+**Long scripts:** `eleven_multilingual_v2` accepts up to 10,000 characters per
+request — comfortably more than a single script section. Generate per
+section (as OpenMontage already does) rather than the whole script in one
+call, and accumulate a duration offset across sections when concatenating
+their word timestamps.
 
 ## Voice Cloning
 
@@ -380,7 +460,41 @@ The `/generate-voiceover` command handles the full workflow:
 6. Updates project.json with timing info
 ```
 
-## Popular Voices
+## Witers Preferred Voices
+
+Witers has its own curated ElevenLabs voices, pre-approved for Spanish
+narration via `eleven_v3` — do not fall back to a generic default voice for
+Witers content when one of these fits. Resolved once against the real
+account and registered in `config/voices/witers_elevenlabs_voices.json`
+(loader: `tools/audio/witers_voice_library.py`).
+
+**Priority (enforced inside `elevenlabs_tts._generate()` via
+`resolve_witers_voice_id`, not something callers need to implement
+themselves):** a Brand Wallet `voice_id` always wins when the caller
+supplies one — it is never overridden. Only when `voice_id` is unset does
+`elevenlabs_tts` fall back to **David - British Storyteller**
+(`BNgbHR0DNeZixGQVzloa`). JC, Kate, and Luján stay registered as Witers'
+other preferred voices, available for a Brand Wallet to select explicitly,
+but none of them is an automatic fallback — only David is. Whichever voice
+is resolved (fallback or Brand Wallet's own, if it happens to be one of the
+four), `model_id` defaults to that voice's `preferred_model`
+(`eleven_v3`) unless the caller passes an explicit `model_id`.
+
+| Key | Display name | Gender | Native tag | Role |
+|-----|--------------|--------|------------|------|
+| `david` | David - British Storyteller | male | en (British) — approved for Spanish anyway | **Default fallback** when Brand Wallet has no voice_id |
+| `jc` | JC - Deep & Touching | male | es (Latin American) | Preferred, Brand-Wallet-selectable |
+| `kate` | Kate – Soothing Meditation & Sleep Voice | female | es (Latin American) | Preferred, Brand-Wallet-selectable |
+| `lujan` | Luján | male | es (Colombian) | Preferred, Brand-Wallet-selectable |
+
+`eleven_v3` caveats confirmed against the account (`GET /v1/models`):
+supports Spanish (74 languages total), but caps at **5,000 characters per
+request** (vs 10,000 for `eleven_multilingual_v2` — chunk per script section,
+as OpenMontage already does), and does not support the `style` or
+`use_speaker_boost` voice_settings fields (the API silently ignores them
+rather than rejecting the request — confirmed with a live call).
+
+## Popular Voices (generic ElevenLabs defaults)
 
 - George: `JBFqnCBsd6RMkjVDRZzb` (warm narrator)
 - Rachel: `21m00Tcm4TlvDq8ikWAM` (clear female)
