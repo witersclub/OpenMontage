@@ -36,6 +36,19 @@ client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 | `pcm_44100` | 44.1kHz | - | Pro+ |
 | `ulaw_8000` | 8kHz | - | Free (telephony) |
 
+## Word-Level Timestamps
+
+`convert_with_timestamps` (SDK) / `POST /v1/text-to-speech/{voice_id}/with-timestamps`
+(REST, what `elevenlabs_tts`'s `with_timestamps` input calls directly) returns
+`audio_base64` plus `alignment`/`normalized_alignment` objects
+(`characters`, `character_start_times_seconds`, `character_end_times_seconds`)
+— character-level, not word-level. See `SKILL.md` > "Word-Level Timestamps
+(Captions)" for the response shape in full and how OpenMontage groups it into
+the word-level captions CaptionOverlay.tsx consumes
+(`tools/audio/elevenlabs_alignment.py`). A streaming variant exists
+(`/stream/with-timestamps`) but OpenMontage's file-based, checkpointed stages
+have no use for it today.
+
 ## Long-form Audio (Stitching)
 
 For continuity across multiple generations:

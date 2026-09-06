@@ -71,7 +71,7 @@ Before rendering, present the user with audio options and get their preferences.
 >
 > **Music:** I can automatically find royalty-free background music from Pixabay (no key needed). If you have a `FREESOUND_API_KEY`, I can also search Freesound as a backup.
 >
-> **Subtitles:** I'll generate word-level subtitles using WhisperX transcription of the final narration, burned into the video via Remotion captions.
+> **Subtitles:** I'll generate word-level subtitles from the narration TTS provider's native alignment when it returns one (e.g. ElevenLabs), or from WhisperX transcription of the final narration otherwise — burned into the video via Remotion captions.
 >
 > Want me to proceed with my recommendations, or adjust anything?
 
@@ -215,7 +215,12 @@ Subtitles are mandatory for all explainer content. Generate them from the narrat
 
 **Remotion path (DEFAULT — when using Remotion render):**
 
-1. **Transcribe** the full narration using the `transcriber` tool (whisperx):
+0. **Check for native timestamps first.** Look at each narration asset's `asset_manifest` entry for a `captions` block (`source: "elevenlabs_alignment"`, `path: <sidecar>.words.json`) — the asset stage records this whenever the TTS provider returned native word-level alignment (e.g. `elevenlabs_tts`/`fal_elevenlabs_tts` called with `timestamps: true`). When every narration asset has one:
+   - Load each sidecar JSON (`{"words": [{"word", "start", "end"}, ...]}`, seconds) and concatenate them in scene order, offsetting each section's timestamps by its `start_seconds` in the timeline (same accumulated-offset rule as stitching narration segments generally — see "Audio sync drift" in Common Pitfalls).
+   - Convert straight to `WordCaption[]` with `tools.audio.elevenlabs_alignment.word_timestamps_to_word_captions(word_timestamps)` (or the equivalent `{word, startMs, endMs}` conversion below) and skip step 1-2 entirely — **do not** run `transcriber` on this audio. The alignment came from the exact text sent to the TTS engine, so it is both more accurate and cheaper than re-transcribing with Whisper.
+   - If even one narration asset lacks a `captions` block (e.g. it came from a provider without native timestamps, such as Piper or Google TTS), fall back to steps 1-2 for that asset's audio only, or for the whole narration track if it's simpler to keep timing uniform.
+
+1. **Transcribe** the full narration using the `transcriber` tool (whisperx) — **only when step 0 found no usable native timestamps**:
    ```python
    from tools.analysis.transcriber import Transcriber
    result = Transcriber().execute({
@@ -257,7 +262,7 @@ Subtitles are mandatory for all explainer content. Generate them from the narrat
 
 **FFmpeg fallback (ONLY when Remotion is unavailable):**
 
-If Remotion is not available, fall back to SRT generation + FFmpeg burn:
+If Remotion is not available, fall back to SRT generation + FFmpeg burn. `subtitle_gen` takes `segments[].words[] = {word, start, end}` (seconds) — the same shape used above, whether it came from `transcription_data['segments']` (Whisper) or from wrapping a narration asset's native `word_timestamps` sidecar as a single segment (`{'start': 0, 'end': total_duration, 'words': word_timestamps}`). Either source works unchanged:
    ```python
    from tools.subtitle.subtitle_gen import SubtitleGen
    SubtitleGen().execute({

@@ -111,7 +111,7 @@ class TTSSelector(BaseTool):
             "timestamps": {
                 "type": "boolean",
                 "default": False,
-                "description": "Request word timestamps when the selected provider supports them.",
+                "description": "Request word timestamps when the selected provider supports them (e.g. elevenlabs_tts, fal_elevenlabs_tts).",
             },
             "apply_text_normalization": {
                 "type": "string",
@@ -228,6 +228,15 @@ class TTSSelector(BaseTool):
     def _adapt_inputs(tool: BaseTool, inputs: dict[str, Any]) -> dict[str, Any]:
         """Translate capability-level controls to provider-native inputs."""
         adapted = dict(inputs)
+
+        if tool.name == "elevenlabs_tts":
+            # elevenlabs_tts's own field is `with_timestamps`, not the
+            # capability-level `timestamps` flag (fal_elevenlabs_tts already
+            # names its field `timestamps`, so it needs no adaptation here).
+            if inputs.get("timestamps") and "with_timestamps" not in inputs:
+                adapted["with_timestamps"] = True
+            return adapted
+
         if tool.name != "azure_tts":
             return adapted
 

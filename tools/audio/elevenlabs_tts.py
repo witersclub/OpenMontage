@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import time
 from pathlib import Path
 from typing import Any
 
+from tools.audio.elevenlabs_alignment import alignment_to_word_timestamps
 from tools.base_tool import (
     BaseTool,
     Determinism,
@@ -42,19 +45,21 @@ class ElevenLabsTTS(BaseTool):
     )
     fallback = "openai_tts"
     fallback_tools = ["openai_tts", "piper_tts"]
-    agent_skills = ["elevenlabs", "text-to-speech"]
+    agent_skills = ["elevenlabs"]
 
     capabilities = [
         "text_to_speech",
         "voice_selection",
         "ssml_support",
         "pronunciation_control",
+        "word_timestamps",
     ]
     supports = {
         "voice_cloning": True,
         "multilingual": True,
         "offline": False,
         "native_audio": True,
+        "word_timestamps": True,
     }
     best_for = [
         "high-quality narration",
@@ -114,6 +119,17 @@ class ElevenLabsTTS(BaseTool):
                 "default": "mp3_44100_128",
                 "enum": ["mp3_44100_128", "mp3_44100_192", "pcm_16000", "pcm_24000"],
             },
+            "with_timestamps": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Request word-level timing via ElevenLabs' /with-timestamps "
+                    "endpoint instead of the plain synthesis endpoint. Adds "
+                    "word_timestamps ({word, start, end} in seconds, the same "
+                    "shape Transcriber produces) and word_timestamps_path to the "
+                    "result, so captions can skip a separate Whisper pass."
+                ),
+            },
         },
     }
 
@@ -130,8 +146,13 @@ class ElevenLabsTTS(BaseTool):
         "style",
         "speed",
         "use_speaker_boost",
+        "with_timestamps",
     ]
-    side_effects = ["writes audio file to output_path", "calls ElevenLabs API"]
+    side_effects = [
+        "writes audio file to output_path",
+        "when with_timestamps=True, also writes a {word,start,end} timestamps JSON sidecar",
+        "calls ElevenLabs API",
+    ]
     user_visible_verification = ["Listen to generated audio for natural speech quality"]
 
     DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
@@ -166,6 +187,7 @@ class ElevenLabsTTS(BaseTool):
         voice_id = inputs.get("voice_id", self.DEFAULT_VOICE_ID)
         model_id = inputs.get("model_id", "eleven_multilingual_v2")
         output_format = inputs.get("output_format", "mp3_44100_128")
+        with_timestamps = bool(inputs.get("with_timestamps", False))
         voice_settings = {
             "stability": inputs.get("stability", 0.5),
             "similarity_boost": inputs.get("similarity_boost", 0.75),
@@ -174,12 +196,16 @@ class ElevenLabsTTS(BaseTool):
             "use_speaker_boost": inputs.get("use_speaker_boost", True),
         }
 
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        if with_timestamps:
+            url += "/with-timestamps"
+
         response = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            url,
             headers={
                 "xi-api-key": api_key,
                 "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
+                "Accept": "application/json" if with_timestamps else "audio/mpeg",
             },
             json={
                 "text": text,
@@ -194,19 +220,47 @@ class ElevenLabsTTS(BaseTool):
         ext = "mp3" if "mp3" in output_format else "wav"
         output_path = Path(inputs.get("output_path", f"tts_output.{ext}"))
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(response.content)
+
+        data: dict[str, Any] = {
+            "provider": self.provider,
+            "model": model_id,
+            "voice_id": voice_id,
+            "voice_settings": voice_settings,
+            "text_length": len(text),
+            "output": str(output_path),
+            "format": output_format,
+        }
+        artifacts = [str(output_path)]
+
+        if with_timestamps:
+            payload = response.json()
+            output_path.write_bytes(base64.b64decode(payload["audio_base64"]))
+
+            word_timestamps = alignment_to_word_timestamps(payload.get("alignment", {}))
+            timestamps_path = output_path.parent / f"{output_path.stem}.words.json"
+            timestamps_path.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "provider": self.provider,
+                        "source": "elevenlabs_alignment",
+                        "words": word_timestamps,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            data["word_timestamps"] = word_timestamps
+            data["word_timestamps_path"] = str(timestamps_path)
+            data["captions_source"] = "elevenlabs_alignment"
+            artifacts.append(str(timestamps_path))
+        else:
+            output_path.write_bytes(response.content)
 
         return ToolResult(
             success=True,
-            data={
-                "provider": self.provider,
-                "model": model_id,
-                "voice_id": voice_id,
-                "voice_settings": voice_settings,
-                "text_length": len(text),
-                "output": str(output_path),
-                "format": output_format,
-            },
-            artifacts=[str(output_path)],
+            data=data,
+            artifacts=artifacts,
             model=model_id,
         )
