@@ -63,13 +63,17 @@ are unreliable (Remotion warns about exactly this at the start of every
 render — "Detected differing memory amounts... You might have inadvertently
 set the --memory flag of `docker run`..."), and Chromium page setup + local
 resource loading is genuinely slower here than the library's ~8s default
-budget assumes. Raising `loadLocalFont`'s `delayRender` timeout to 60s made
-the *exact same* render succeed reliably across repeated runs, at default
-concurrency and forced `concurrency=1` alike, in well under the raised
-budget (never anywhere near actually using the full 60s). Do not
-reinterpret a future slow-but-successful local font load as a sign the
-self-hosting approach is broken — check wall-clock time against the budget
-before assuming a hang.
+budget assumes. `loadLocalFont`'s `delayRender` timeout is set to 120s to
+absorb this — a text-only render actually settles in well under that (60s
+was already enough on its own in that case), but once a real video is
+decoding as a `backgroundVideo` at the same time (see below), the added
+resource contention pushed a real run past 58s, so the budget needs
+headroom for the heaviest realistic composition, not just a bare text card.
+Full render times observed with a real video background were ~82-86s wall
+clock — the delayRender timeout is a safety ceiling, never how long a
+render is expected to take. Do not reinterpret a future slow-but-successful
+local font load as a sign the self-hosting approach is broken — check
+wall-clock time against the budget before assuming a hang.
 
 **Adding a new font later:** do not add a new `@remotion/google-fonts`
 import. Fetch the file once (from an environment with normal internet
@@ -163,32 +167,54 @@ or a slower moment on a shared machine could still exceed even the widened
 60s font-load budget, and a hung render is worse than a fast, logged
 fallback.
 
-## Known follow-up (not fixed in this pass): `backgroundVideo` + local files
+## `backgroundVideo` + local files — fixed
 
-Discovered while smoke-testing this infrastructure work, out of scope for
-this pass, and **not yet fixed**: a `hero_title`/`text_card` cut's
-`backgroundVideo` pointed at an absolute local file path (the pattern the
-very first production reel's plan assumed, via `resolveAsset()`'s `file://`
-conversion) fails with `Can only download URLs starting with http:// or
-https://, got "file:///...".` This Remotion version's asset-download
-preprocessing for `<OffthreadVideo>`-backed layers apparently requires an
-`http(s)://`-servable URL — `resolveAsset()`'s `file://` fallback does not
-cover this path the way it does for a plain (no-type) video cut.
-Text-only Remotion cuts (stat cards, charts, kinetic typography, hero
-titles/text cards with a plain color or image background) are unaffected
-and were the ones actually load-tested end-to-end in this pass.
+A `hero_title`/`text_card` cut's `backgroundVideo` pointed at an absolute
+local file path used to fail with `Can only download URLs starting with
+http:// or https://, got "file:///...".` Root cause, found by reading
+`@remotion/renderer`'s own source
+(`dist/assets/read-file.js`/`download-and-map-assets-to-file.js`):
+`<OffthreadVideo>`'s frame-extraction proxy is a server-side (Node) HTTP
+handler that unconditionally runs every asset through
+`@remotion/renderer`'s asset-download step before handing frames to ffmpeg —
+and that step's HTTP client (`getClient()` in `read-file.js`) only
+recognizes `http://`/`https://`, throwing immediately on anything else,
+`file://` included. This affects `<OffthreadVideo>` everywhere it's used,
+not just `backgroundVideo` specifically — a plain (no-`type`) video cut only
+ever avoided it because its `source` value happened to already be one of
+the keys `_stage_remotion_media` rewrites into a `staticFile()`-relative
+path before the browser ever sees it, so it never reached `resolveAsset()`'s
+`file://` branch in the first place. `backgroundVideo`/`backgroundImage`
+(the `HeroTitle`/`TextCard`/etc. background-layer props — see
+`Explainer.tsx`'s `maybeWrapWithBg`) resolve through that exact same
+`resolveAsset()` → `OffthreadVideo` path but were simply missing from that
+staging key set.
 
-Until fixed, a composition that needs *video behind animated text* should
-either go through the FFmpeg path (proven working — see the earlier
-production reel) or have its `backgroundVideo` file staged into a
-`public_dir` (a relative `staticFile()`-style path) instead of passed as an
-absolute path. The likely real fix: extend `VideoCompose._stage_remotion_media`'s
-`media_keys` set (currently `{"source", "src", "backgroundSrc"}`) to also
-cover `backgroundVideo`/`backgroundImage`, so those get auto-copied into the
-render's public dir the same way plain video cuts already do. Left
-untouched here rather than folded into this change set, which was scoped to
-fonts/Chromium/fallback/session-start — flagging it now so a future job
-doesn't have to rediscover it from scratch.
+**Fix:** `VideoCompose._stage_remotion_media`'s `media_keys` set now also
+includes `backgroundVideo` and `backgroundImage`, so a local file passed
+under either prop gets copied into the render's public dir and rewritten to
+a relative `staticFile()` path — served over Remotion's own local
+render-time HTTP server, exactly like `source`/`src`/`backgroundSrc`
+already were. No network access involved (the "server" here is a loopback
+HTTP server Remotion itself starts for the render, not anything external),
+and no security check was touched.
+
+**Verified** with 3 consecutive renders, network disabled for the process
+(proxy env vars stripped, matching the fonts/Chromium test above), each
+using a different real Pexels-downloaded MP4 as `backgroundVideo` behind an
+animated `hero_title`, 1080×1920, through the actual `video_compose.py`
+`remotion_render` operation (not raw `npx`):
+
+| Run | Source clip | Result | Wall time |
+|---|---|---|---|
+| 1 | `hook_pexels.mp4` | success, 1 asset staged | 83.5s |
+| 2 | `error1_pexels.mp4` | success, 1 asset staged | 85.1s |
+| 3 | `cierre_pexels.mp4` | success, 1 asset staged | 82.0s |
+
+All three: 1080×1920 h264/aac output, font visibly correct, video visibly
+correct. This is now the proven path for Witers' main production case —
+previously-downloaded Pexels MP4s as background with animated text/captions
+on top.
 
 ## Captions: ready for word-level sync, not yet wired to narration
 

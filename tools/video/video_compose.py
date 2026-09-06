@@ -903,13 +903,30 @@ class VideoCompose(BaseTool):
     def _stage_remotion_media(value: Any, public_dir: Path) -> int:
         """Copy local media references into a Remotion public dir in-place.
 
-        OffthreadVideo's compositor rejects ``file://`` sources. Rewriting
-        staged files to relative ``staticFile()`` paths works for video and
-        image components on every platform.
+        A ``file://`` source works for React-side rendering (a plain
+        ``<video>``/``<img>`` tag happily loads one in headless Chrome), but
+        NOT for ``<OffthreadVideo>``: its frame-extraction proxy is a
+        server-side (Node) HTTP handler that unconditionally runs the asset
+        through ``@remotion/renderer``'s asset-download step before handing
+        frames to ffmpeg, and that step's HTTP client only accepts
+        ``http://``/``https://`` — a ``file://`` src throws "Can only
+        download URLs starting with http:// or https://". Rewriting staged
+        files to relative ``staticFile()`` paths (served over Remotion's own
+        local render-time HTTP server, never external network) sidesteps
+        this entirely and works for every ``OffthreadVideo``/``Img`` call
+        site, whatever prop name it's passed under.
+
+        `backgroundVideo`/`backgroundImage` (HeroTitle/TextCard/etc.'s
+        background-layer props — see Explainer.tsx's `maybeWrapWithBg`) were
+        historically missing from this set even though they resolve through
+        the exact same `resolveAsset()` → `OffthreadVideo`/`Img` path as
+        `source`/`src`/`backgroundSrc` — a plain video cut worked by
+        accident of using an already-covered prop name, while a text card
+        with a video background did not. See docs/remotion-runtime.md.
         """
 
         staged_by_source: dict[Path, str] = {}
-        media_keys = {"source", "src", "backgroundSrc"}
+        media_keys = {"source", "src", "backgroundSrc", "backgroundVideo", "backgroundImage"}
 
         def visit(node: Any, parent_key: str | None = None) -> Any:
             if isinstance(node, dict):

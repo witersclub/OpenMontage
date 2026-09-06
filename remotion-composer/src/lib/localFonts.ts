@@ -66,7 +66,7 @@ export function loadLocalFont(
       // A local staticFile() read has no network round-trip involved, so a
       // generous production timeout here is purely a safety net, not an
       // expected wait.
-      { timeoutInMilliseconds: 60000 },
+      { timeoutInMilliseconds: 120000 },
     );
     loadedFonts[fontKey] = document.fonts
       .load(`${style === "italic" ? "italic " : ""}${weight} 16px "${fontFamily}"`)
