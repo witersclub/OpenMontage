@@ -87,6 +87,10 @@ remotion-composer/projects/
 remotion-composer/public/*
 # But keep demo props (shipped with the project for zero-key demos)
 !remotion-composer/public/demo-props/
+# And keep the vendored self-hosted fonts (see public/fonts/README.md) --
+# required for renders to stay network-independent, not regenerable at
+# render time the way other public/ content is.
+!remotion-composer/public/fonts/
 # Ignore test/scratch compositions in demo-props (keep only curated demos)
 remotion-composer/public/demo-props/test-*
 remotion-composer/public/demo-props/talking-head-*

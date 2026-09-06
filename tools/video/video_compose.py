@@ -23,9 +23,21 @@ components. Runtime still wins first: HyperFrames atelier routes through
 `_render_via_atelier` for a project-local Remotion entry that bypasses the
 cut-schema and stock scene-type registry.
 
-Silent runtime swaps are forbidden by governance. If the chosen runtime is
-unavailable or fails, this tool surfaces a structured blocker and waits for
-the agent to re-ask the user rather than substituting a different engine.
+Silent runtime swaps are forbidden by governance for content/composition
+failures: if Remotion fails for a reason that isn't a recognized
+infrastructure signature (see `_classify_remotion_failure`), this tool
+surfaces a structured blocker and waits for the agent to re-ask the user
+rather than substituting a different engine.
+
+The one deliberate exception: a *known* Remotion infrastructure failure
+(browser couldn't launch, its executable is missing, or a network resource
+needed only for browser/font setup — never actual composition content — is
+unreachable) triggers an immediate, single-attempt fallback to the FFmpeg
+path. No retries, no re-diagnosis: the whole point is that a production
+worker recognizes this class of failure on sight and keeps moving. The
+substitution is never silent — it's recorded in the result's
+`render_runtime_fallback` block and reflected in `final_review`. See
+docs/remotion-runtime.md.
 """
 
 from __future__ import annotations
@@ -34,6 +46,7 @@ import contextlib
 import json
 import hashlib
 import logging
+import re
 import secrets
 import shutil
 import subprocess
@@ -1372,6 +1385,50 @@ class VideoCompose(BaseTool):
 
         return theme if theme else None
 
+    # Known-infrastructure Remotion failure signatures — matched against the
+    # tool's own error string. Deliberately a narrow allowlist, not a
+    # catch-all: only failures that happen before any actual frame is
+    # rendered (browser couldn't start, or a required network resource for
+    # browser/font setup is unreachable) qualify. A real content/composition
+    # bug (bad cut data, a component throwing on invalid props, a timeout on
+    # a genuinely heavy render) must NOT match here — falling back to FFmpeg
+    # for those would silently change the deliverable instead of surfacing
+    # the actual bug. See docs/remotion-runtime.md.
+    _REMOTION_INFRA_FAILURE_PATTERNS: list[tuple[str, str]] = [
+        (r"failed to launch the browser process", "browser_launch_failed"),
+        (r"host not in allowlist", "browser_download_blocked"),
+        (r"received a status code of 403 while downloading", "browser_download_blocked"),
+        (r"err_cert_authority_invalid", "font_or_asset_network_error"),
+        (r"networkerror: a network error occurred", "font_or_asset_network_error"),
+        (r"no local chromium found", "browser_executable_missing"),
+        (r"could not determine executable to run", "browser_executable_missing"),
+        (r"spawn.*enoent", "browser_executable_missing"),
+        (r"delayrender\(\).*was called but not cleared", "resource_load_timeout"),
+    ]
+    # Deliberately NOT included: a bare subprocess-level render timeout
+    # ("Remotion render timed out after Ns"). That can also mean a
+    # genuinely heavy/stuck composition — a content signal, not an
+    # infrastructure one — so it must still surface to the agent rather
+    # than auto-falling back. Only the specific delayRender-resource-timeout
+    # signature above (diagnosed as this environment's slow local I/O, not a
+    # missing resource) is safe to treat as infrastructure.
+
+    @classmethod
+    def _classify_remotion_failure(cls, error_message: str | None) -> str | None:
+        """Return a short reason code if `error_message` matches a known
+        Remotion infrastructure failure, else None.
+
+        None means "not a recognized infra failure" — the caller must treat
+        it as a possible content bug and NOT auto-fallback.
+        """
+        if not error_message:
+            return None
+        lowered = error_message.lower()
+        for pattern, reason in cls._REMOTION_INFRA_FAILURE_PATTERNS:
+            if re.search(pattern, lowered):
+                return reason
+        return None
+
     def _needs_remotion(self, cuts: list[dict]) -> bool:
         """Determine whether Remotion should handle this composition.
 
@@ -1672,23 +1729,102 @@ class VideoCompose(BaseTool):
                 remotion_inputs["public_dir"] = inputs["public_dir"]
             render_result = self._remotion_render(remotion_inputs)
 
-            # Governance: NEVER silently fall back to FFmpeg when Remotion fails.
-            # The agent must decide the fallback path, not the tool.
             if not render_result.success:
-                renderer_family = edit_decisions.get("renderer_family", "unknown")
-                return ToolResult(
-                    success=False,
-                    error=(
-                        f"Remotion render failed for renderer_family={renderer_family!r}. "
-                        f"Underlying error: {render_result.error}\n\n"
-                        f"This composition requires Remotion (images, text cards, animations). "
-                        f"Options:\n"
-                        f"  1. Fix Remotion setup (cd remotion-composer && npm install)\n"
-                        f"  2. Re-run with operation='compose' for FFmpeg-only (video cuts only)\n"
-                        f"  3. Approve a degraded FFmpeg render (still images → Ken Burns)\n\n"
-                        f"Per governance: renderer downgrade requires user approval."
-                    ),
+                infra_reason = self._classify_remotion_failure(render_result.error)
+
+                if infra_reason is None:
+                    # Governance: NEVER silently fall back to FFmpeg for a
+                    # failure that isn't a recognized infrastructure
+                    # signature. The agent must decide, not the tool — this
+                    # could be a real content/composition bug.
+                    renderer_family = edit_decisions.get("renderer_family", "unknown")
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            f"Remotion render failed for renderer_family={renderer_family!r}. "
+                            f"Underlying error: {render_result.error}\n\n"
+                            f"This does not match a known infrastructure failure signature "
+                            f"(see docs/remotion-runtime.md), so it was NOT auto-substituted "
+                            f"with FFmpeg — that could silently change the deliverable for what "
+                            f"may be a real content/composition bug. Options:\n"
+                            f"  1. Fix the underlying issue (bad cut data, missing asset, component bug)\n"
+                            f"  2. Re-run with operation='compose' for FFmpeg-only (video cuts only)\n"
+                            f"  3. Approve a degraded FFmpeg render (still images → Ken Burns)\n\n"
+                            f"Per governance: renderer downgrade requires user approval."
+                        ),
+                    )
+
+                # --- Known infrastructure failure: fast, automatic, single-attempt fallback ---
+                # No retries, no further diagnosis — the point of classifying
+                # this up front is that a worker recognizes it on sight and
+                # keeps moving instead of burning time/tokens re-deriving
+                # what's already a known failure mode.
+                original_error = render_result.error
+                fallback_result = self._render_via_ffmpeg(
+                    inputs=inputs,
+                    edit_decisions=edit_decisions,
+                    resolved_cuts=resolved_cuts,
+                    output_path=output_path,
+                    profile=profile,
                 )
+                fallback_note = {
+                    "triggered": True,
+                    "reason_code": infra_reason,
+                    "original_runtime": "remotion",
+                    "fallback_runtime": "ffmpeg",
+                    "original_error": original_error,
+                    "fallback_succeeded": fallback_result.success,
+                    "decision_log_entry": {
+                        "category": "render_runtime_selection",
+                        "subject": "Composition runtime for this render",
+                        "selected": "ffmpeg",
+                        "reason": (
+                            f"Remotion failed with a known infrastructure signature "
+                            f"({infra_reason}); automatically substituted FFmpeg per the "
+                            f"fast-fallback policy (no retries/diagnosis — see "
+                            f"docs/remotion-runtime.md). This was an automatic decision, "
+                            f"not human-reviewed — the calling skill must append it to the "
+                            f"project's decision_log verbatim and flag it in final_review."
+                        ),
+                        "options_considered": [
+                            {
+                                "option_id": "remotion",
+                                "label": "Remotion (locked at proposal)",
+                                "score": 0.0,
+                                "reason": "Failed with a known infrastructure signature before rendering any content.",
+                                "rejected_because": original_error,
+                            },
+                            {
+                                "option_id": "ffmpeg",
+                                "label": "FFmpeg automatic fallback",
+                                "score": 1.0,
+                                "reason": "Only remaining runtime that does not depend on the failed infrastructure (no browser/font network dependency).",
+                            },
+                        ],
+                        "user_visible": True,
+                        "user_approved": False,
+                    },
+                }
+
+                if not fallback_result.success:
+                    renderer_family = edit_decisions.get("renderer_family", "unknown")
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            f"Remotion failed with a known infrastructure signature "
+                            f"({infra_reason}) and the automatic FFmpeg fallback also failed.\n"
+                            f"Remotion error: {original_error}\n"
+                            f"FFmpeg error: {fallback_result.error}\n"
+                            f"renderer_family={renderer_family!r}."
+                        ),
+                        data={"render_runtime_fallback": fallback_note},
+                    )
+
+                if fallback_result.data is None:
+                    fallback_result.data = {}
+                fallback_result.data["render_runtime_fallback"] = fallback_note
+                render_result = fallback_result
+
             if inputs.get("audio_path"):
                 mux_result = self._mux_external_audio(output_path, inputs["audio_path"])
                 if not mux_result.success:
@@ -1719,9 +1855,17 @@ class VideoCompose(BaseTool):
 
         # --- Post-render: mandatory final self-review ---
         if render_result.success and output_path.exists():
+            # If an automatic infra fallback swapped runtimes, final_review
+            # must judge the runtime that ACTUALLY ran, not the one locked
+            # at proposal — otherwise runtime_swap_detected would silently
+            # miss the swap instead of flagging it. See docs/remotion-runtime.md.
+            review_edit_decisions = edit_decisions
+            if render_result.data and render_result.data.get("render_runtime_fallback", {}).get("triggered"):
+                review_edit_decisions = dict(edit_decisions, render_runtime="ffmpeg")
+
             final_review = self._run_final_review(
                 output_path,
-                edit_decisions,
+                review_edit_decisions,
                 inputs.get("proposal_packet"),
                 narration_transcript_path=inputs.get("narration_transcript_path"),
                 script_text=inputs.get("script_text") or self._read_text_file(
