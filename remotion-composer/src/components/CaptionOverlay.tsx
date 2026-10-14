@@ -177,9 +177,20 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
       {pages.map((page, i) => {
         const fromFrame = Math.round((page.startMs / 1000) * fps);
         const nextStart = pages[i + 1]?.startMs ?? page.endMs + 500;
+        // A page's own spoken words end at page.endMs; without a cap, a long
+        // silent gap before the next page (narration pause, or a scene with
+        // no speech at all) left this page frozen on screen for the entire
+        // gap, since visibility ran all the way to nextStart regardless of
+        // how far away that was. Clear the caption shortly after its last
+        // word instead — only stay up to nextStart when the next page is
+        // already close behind (continuous narration), never to bridge a
+        // real silence.
+        const silenceClearMs = 600;
+        const naturalEnd = page.endMs + silenceClearMs;
+        const effectiveEnd = Math.min(nextStart, naturalEnd);
         const duration = Math.max(
           1,
-          Math.round(((nextStart - page.startMs) / 1000) * fps)
+          Math.round(((effectiveEnd - page.startMs) / 1000) * fps)
         );
 
         return (
